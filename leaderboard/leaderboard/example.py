@@ -57,7 +57,7 @@ class PidEnv(gym.Env):
             done = False
             self.i += 1
 
-        return self.observe(), reward[0], done, {}
+        return self.observe(), reward[0], False, {}
 
     def reset(self):
         """
@@ -67,6 +67,7 @@ class PidEnv(gym.Env):
                         the initial state of the environment
     """
         PidEnv.count -= 1
+        print("reset called")
         return self.observe(), {}
 
     def render(self, mode='human', close=False):
@@ -187,7 +188,7 @@ def test_rainbow(args=get_args()):
         return NoisyLinear(x, y, args.noisy_std)
 
     net = Net(
-        args.state_shape,
+        1,
         args.action_shape,
         hidden_sizes=args.hidden_sizes,
         device=args.device,
@@ -223,7 +224,7 @@ def test_rainbow(args=get_args()):
         buf = VectorReplayBuffer(args.buffer_size, buffer_num=len(train_envs))
     # collector
     train_collector = Collector(policy, train_envs, buf, exploration_noise=True)
-    # test_collector = Collector(policy, test_envs, exploration_noise=True)
+    test_collector = Collector(policy, train_envs, exploration_noise=True)
     # policy.set_eps(1)
     train_collector.collect(n_step=args.batch_size * args.training_num)
     # log
@@ -298,7 +299,7 @@ def test_rainbow(args=get_args()):
     result = offpolicy_trainer(
         policy,
         train_collector,
-        None,
+        test_collector,
         args.epoch,
         args.step_per_epoch,
         args.step_per_collect,

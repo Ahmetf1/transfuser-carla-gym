@@ -134,18 +134,21 @@ class RlScenarioManager(object):
         #         self._tick_scenario(timestamp)
 
     def step_scenario(self, action):
-        if self._running:
-            timestamp = None
-            world = CarlaDataProvider.get_world()
-            if world:
-                snapshot = world.get_snapshot()
-                if snapshot:
-                    timestamp = snapshot.timestamp
-            if timestamp:
-                self._tick_scenario(timestamp, action)
+        while True:
+            if self._running:
+                timestamp = None
+                world = CarlaDataProvider.get_world()
+                if world:
+                    snapshot = world.get_snapshot()
+                    if snapshot:
+                        timestamp = snapshot.timestamp
+                if timestamp:
+                    is_break = self._tick_scenario(timestamp, action)
+                    if is_break:
+                        break
 
     def observe(self):
-        return self._agent.observe()
+        return self._agent._agent.observe()
 
     def get_ego_action(self, action):
         control = carla.VehicleControl()
@@ -162,6 +165,7 @@ class RlScenarioManager(object):
         """
         Run next tick of scenario and the agent and tick the world.
         """
+        time_elapsed = False
 
         if self._timestamp_last_run < timestamp.elapsed_seconds and self._running:
             self._timestamp_last_run = timestamp.elapsed_seconds
@@ -207,8 +211,12 @@ class RlScenarioManager(object):
             spectator.set_transform(
                 carla.Transform(ego_trans.location + carla.Location(z=50), carla.Rotation(pitch=-90)))
 
+            time_elapsed = True
+
         if self._running and self.get_running_status():
             CarlaDataProvider.get_world().tick(self._timeout)
+
+        return time_elapsed
 
     def get_running_status(self):
         """

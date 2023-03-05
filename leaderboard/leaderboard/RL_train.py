@@ -26,18 +26,17 @@ from srunner.scenariomanager.watchdog import Watchdog
 from leaderboard.scenarios.RL_scenario_manager import RlScenarioManager
 from leaderboard.scenarios.route_scenario_local import RouteScenario
 from leaderboard.envs.sensor_interface import SensorConfigurationInvalid
-from leaderboard.autoagents.agent_wrapper_local import  AgentWrapper, AgentError
+from leaderboard.autoagents.agent_wrapper_local import AgentWrapper, AgentError
 from leaderboard.utils.statistics_manager_local import StatisticsManager
 from leaderboard.utils.route_indexer import RouteIndexer
 
+import gym
+import numpy as np
+from enum import Enum
 
-import argparse
-import os
 import pickle
 import pprint
 
-import gym
-import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
@@ -50,27 +49,26 @@ from tianshou.utils.net.common import Net
 from tianshou.utils.net.discrete import NoisyLinear
 
 sensors_to_icons = {
-    'sensor.camera.rgb':        'carla_camera',
-    'sensor.lidar.ray_cast':    'carla_lidar',
-    'sensor.other.radar':       'carla_radar',
-    'sensor.other.gnss':        'carla_gnss',
-    'sensor.other.imu':         'carla_imu',
-    'sensor.opendrive_map':     'carla_opendrive_map',
-    'sensor.speedometer':       'carla_speedometer',
+    'sensor.camera.rgb': 'carla_camera',
+    'sensor.lidar.ray_cast': 'carla_lidar',
+    'sensor.other.radar': 'carla_radar',
+    'sensor.other.gnss': 'carla_gnss',
+    'sensor.other.imu': 'carla_imu',
+    'sensor.opendrive_map': 'carla_opendrive_map',
+    'sensor.speedometer': 'carla_speedometer',
     'sensor.stitch_camera.rgb': 'carla_camera',  # for local World on Rails evaluation
-    'sensor.camera.semantic_segmentation': 'carla_camera', # for datagen
-    'sensor.camera.depth':      'carla_camera', # for datagen
+    'sensor.camera.semantic_segmentation': 'carla_camera',  # for datagen
+    'sensor.camera.depth': 'carla_camera',  # for datagen
 }
 
 
 class RLCarla(gym.Env, object):
-
     ego_vehicles = []
 
     # Tunable parameters
     client_timeout = 10.0  # in seconds
     wait_for_world = 20.0  # in seconds
-    frame_rate = 20.0      # in Hz
+    frame_rate = 20.0  # in Hz
 
     def __init__(self, args, statistics_manager):
         """
@@ -81,6 +79,18 @@ class RLCarla(gym.Env, object):
         self.sensors = None
         self.sensor_icons = []
         self._vehicle_lights = carla.VehicleLightState.Position | carla.VehicleLightState.LowBeam
+
+        self.i = 0
+        self.nodes_count = {}
+        self.started = False
+
+        self.penalties = {
+            "COLLISION_PEDESTRIAN": 0.50,
+            "COLLISION_VEHICLE": 0.60,
+            "COLLISION_STATIC": 0.65,
+            "TRAFFIC_LIGHT": 0.70,
+            "PENALTY_STOP": 0.80
+        }
 
         # First of all, we need to create the client that will send the requests
         # to the simulator. Here we'll assume the simulator is accepting
@@ -115,8 +125,12 @@ class RLCarla(gym.Env, object):
         signal.signal(signal.SIGINT, self._signal_handler)
 
         self.args = args
-        self.observation_space = gym.spaces.Box(-2, 2, shape=(1,), dtype=float)
-        self.action_space = gym.spaces.Discrete(11)
+        self.observation_space = gym.spaces.Dict({
+            "waypoints": gym.spaces.Box(low=np.array([[-15, 0], [-15, 0], [-15, 0], [-15, 0]]),
+                                        high=np.array([[15, 30], [15, 30], [15, 30], [15, 30]]), shape=[4, 2]),
+            "hd_map": gym.spaces.Box(low=0, high=255, shape=(256, 256, 3), dtype=np.uint8)
+        })
+        self.action_space = gym.spaces.Discrete(66)
 
         #
         self.route_indexer = RouteIndexer(args.routes, args.scenarios, args.repetitions)
@@ -129,36 +143,95 @@ class RLCarla(gym.Env, object):
             self.route_indexer.save_state(args.checkpoint)
         #
 
-        self.reset()
+        # self.reset()
 
     def step(self, action):
+        self.started = True
+        self.i += 1
         self.manager.step_scenario(action)
+        is_done = False
+        reward = 100
+        score_penalty = 0
 
+        if self.scenario.scenario.timeout_node.timeout:
+            is_done = True
+
+        for node in self.scenario.scenario.get_criteria():
+            if node not in self.nodes_count:
+                self.nodes_count[node] = 0
+            if node.list_traffic_events:
+                print(len(node.list_traffic_events[self.nodes_count[node]:]))
+                for event in node.list_traffic_events[self.nodes_count[node]:]:
+                    print(event)
+                    self.nodes_count[node] += 1
+                    if event.get_type() == TrafficEventType.COLLISION_STATIC:
+                        score_penalty *= self.penalties["COLLISION_STATIC"]
+                        print("collision_static")
+
+                    elif event.get_type() == TrafficEventType.COLLISION_PEDESTRIAN:
+                        score_penalty *= self.penalties["COLLISION_PEDESTRIAN"]
+                        print("collision_pedesterian")
+
+                    elif event.get_type() == TrafficEventType.COLLISION_VEHICLE:
+                        score_penalty *= self.penalties["COLLISION_VEHICLE"]
+                        print("collision_vehicle")
+
+                    elif event.get_type() == TrafficEventType.OUTSIDE_ROUTE_LANES_INFRACTION:
+                        score_penalty *= (1 - event.get_dict()['percentage'] / 100)
+                        print("outside route lanes")
+
+                    elif event.get_type() == TrafficEventType.TRAFFIC_LIGHT_INFRACTION:
+                        score_penalty *= self.penalties["TRAFFIC_LIGHT"]
+                        print("traffic light")
+
+                    #elif event.get_type() == TrafficEventType.ROUTE_DEVIATION:
+
+                    elif event.get_type() == TrafficEventType.STOP_INFRACTION:
+                        score_penalty *= self.penalties["PENALTY_STOP"]
+                        print("stop infraction")
+
+                    elif event.get_type() == TrafficEventType.VEHICLE_BLOCKED:
+                        is_done = True
+                        print("vehicle blocked")
+
+                    elif event.get_type() == TrafficEventType.ROUTE_COMPLETED:
+                        is_done = True
+                        print("route completed")
+
+                    elif event.get_type() == TrafficEventType.ROUTE_COMPLETION:
+                        #is_done = True
+                        print("route completion")
+
+
+        return self.manager.observe(), reward-score_penalty, is_done, {}
 
     def reset(self):
-        #self.route_indexer.save_state(self.args.checkpoint)
+        if self.started:
+            self.route_indexer.save_state(self.args.checkpoint)
+            self.stop_route(self.config)
         if self.route_indexer.peek():
             # setup
-            config = self.route_indexer.next()
-            self._load_scenario(self.args, config)
+            self.config = self.route_indexer.next()
+            self._load_scenario(self.args, self.config)
             self.manager.run_scenario()
-        else:
+        if not self.route_indexer.peek():
             self.close()
 
+        # obs = {
+        #     "waypoints": np.zeros((2, 2)),
+        #     "hd_map": np.zeros((100, 200, 3))
+        # }
+
+        return np.zeros(196616), {}
 
     def render(self, mode='human', close=False):
         print("render")
 
-    def close(self):
-        print("\033[1m> Registering the global statistics\033[0m")
-        global_stats_record = self.statistics_manager.compute_global_statistics(self.route_indexer.total)
-        StatisticsManager.save_global_record(global_stats_record, self.sensor_icons, self.route_indexer.total,
-                                             self.args.checkpoint)
-
+    def stop_route(self, config):
         try:
             print("\033[1m> Stopping the route\033[0m")
             self.manager.stop_scenario()
-            self._register_statistics(self.config, self.args.checkpoint, "entry_status", "crash_message")
+            self._register_statistics(config, self.args.checkpoint, "entry_status", "crash_message")
 
             if self.args.record:
                 self.client.stop_recorder()
@@ -175,8 +248,14 @@ class RLCarla(gym.Env, object):
 
             crash_message = "Simulation crashed"
 
-        if crash_message == "Simulation crashed":
-            sys.exit(-1)
+            if crash_message == "Simulation crashed":
+                sys.exit(-1)
+
+    def close(self):
+        print("\033[1m> Registering the global statistics\033[0m")
+        global_stats_record = self.statistics_manager.compute_global_statistics(self.route_indexer.total)
+        StatisticsManager.save_global_record(global_stats_record, self.sensor_icons, self.route_indexer.total,
+                                             self.args.checkpoint)
 
     def _signal_handler(self, signum, frame):
         """
@@ -202,7 +281,7 @@ class RLCarla(gym.Env, object):
         """
         Remove and destroy all actors
         """
-
+        print("Cleanup called")
         # Simulation still running and in synchronous mode?
         if self.manager and self.manager.get_running_status() \
                 and hasattr(self, 'world') and self.world:
@@ -331,14 +410,14 @@ class RLCarla(gym.Env, object):
 
         # Prepare the statistics of the route
         self.statistics_manager.set_route(config.name, config.index)
-        if int(os.environ['DATAGEN'])==1:
+        if int(os.environ['DATAGEN']) == 1:
             CarlaDataProvider._rng = random.RandomState(config.index)
 
         # Set up the user's agent, and the timer to avoid freezing the simulation
         try:
             self._agent_watchdog.start()
             agent_class_name = getattr(self.module_agent, 'get_entry_point')()
-            if int(os.environ['DATAGEN'])==1:
+            if int(os.environ['DATAGEN']) == 1:
                 self.agent_instance = getattr(self.module_agent, agent_class_name)(args.agent_config, config.index)
             else:
                 self.agent_instance = getattr(self.module_agent, agent_class_name)(args.agent_config)
@@ -417,7 +496,6 @@ class RLCarla(gym.Env, object):
             self._cleanup()
             sys.exit(-1)
 
-# RL functions
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -460,29 +538,27 @@ def get_args():
     return args
 
 
-def test_rainbow(args=get_args()):
-    env = gym.make(args.task)
-    args.state_shape = env.observation_space.shape or env.observation_space.n
-    args.action_shape = env.action_space.shape or env.action_space.n
+def test_rainbow(args, args_env, statics_manager):
+    train_envs = RLCarla(args_env, statics_manager)
+    args.state_shape = train_envs.observation_space.shape
+    args.action_shape = train_envs.action_space.shape
     if args.reward_threshold is None:
-        default_reward_threshold = {"CartPole-v0": 195}
-        args.reward_threshold = default_reward_threshold.get(
-            args.task, env.spec.reward_threshold
-        )
-    # train_envs = gym.make(args.task)
+        args.reward_threshold = 100
+
     # you can also use tianshou.env.SubprocVectorEnv
-    train_envs = DummyVectorEnv(
-        [lambda: gym.make(args.task) for _ in range(args.training_num)]
-    )
-    # test_envs = gym.make(args.task)
-    test_envs = DummyVectorEnv(
-        [lambda: gym.make(args.task) for _ in range(args.test_num)]
-    )
+    # train_envs = DummyVectorEnv(
+    #     [lambda: gym.make(args.task) for _ in range(args.training_num)]
+    # )
+    # # test_envs = gym.make(args.task)
+    # test_envs = DummyVectorEnv(
+    #     [lambda: gym.make(args.task) for _ in range(args.test_num)]
+    # )
     # seed
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    train_envs.seed(args.seed)
-    test_envs.seed(args.seed)
+
+    # train_envs.seed(args.seed)
+    # test_envs.seed(args.seed)
 
     # model
 
@@ -490,17 +566,17 @@ def test_rainbow(args=get_args()):
         return NoisyLinear(x, y, args.noisy_std)
 
     net = Net(
-        args.state_shape,
-        args.action_shape,
+        196616,
+        66,
         hidden_sizes=args.hidden_sizes,
         device=args.device,
         softmax=True,
         num_atoms=args.num_atoms,
         dueling_param=({
-            "linear_layer": noisy_linear
-        }, {
-            "linear_layer": noisy_linear
-        }),
+                           "linear_layer": noisy_linear
+                       }, {
+                           "linear_layer": noisy_linear
+                       }),
     )
     optim = torch.optim.Adam(net.parameters(), lr=args.lr)
     policy = RainbowPolicy(
@@ -523,10 +599,10 @@ def test_rainbow(args=get_args()):
             weight_norm=True,
         )
     else:
-        buf = VectorReplayBuffer(args.buffer_size, buffer_num=len(train_envs))
+        buf = VectorReplayBuffer(args.buffer_size, buffer_num=1)
     # collector
     train_collector = Collector(policy, train_envs, buf, exploration_noise=True)
-    test_collector = Collector(policy, test_envs, exploration_noise=True)
+    # test_collector = Collector(policy, test_envs, exploration_noise=True)
     # policy.set_eps(1)
     train_collector.collect(n_step=args.batch_size * args.training_num)
     # log
@@ -546,7 +622,7 @@ def test_rainbow(args=get_args()):
             policy.set_eps(args.eps_train)
         elif env_step <= 50000:
             eps = args.eps_train - (env_step - 10000) / \
-                40000 * (0.9 * args.eps_train)
+                  40000 * (0.9 * args.eps_train)
             policy.set_eps(eps)
         else:
             policy.set_eps(0.1 * args.eps_train)
@@ -556,7 +632,7 @@ def test_rainbow(args=get_args()):
                 beta = args.beta
             elif env_step <= 50000:
                 beta = args.beta - (env_step - 10000) / \
-                    40000 * (args.beta - args.beta_final)
+                       40000 * (args.beta - args.beta_final)
             else:
                 beta = args.beta_final
             buf.set_beta(beta)
@@ -598,10 +674,11 @@ def test_rainbow(args=get_args()):
             print("Fail to restore buffer.")
 
     # trainer
+    print("Started to RL Training")
     result = offpolicy_trainer(
         policy,
         train_collector,
-        test_collector,
+        None,
         args.epoch,
         args.step_per_epoch,
         args.step_per_collect,
@@ -609,7 +686,7 @@ def test_rainbow(args=get_args()):
         args.batch_size,
         update_per_step=args.update_per_step,
         train_fn=train_fn,
-        test_fn=test_fn,
+        test_fn=None,
         stop_fn=stop_fn,
         save_best_fn=save_best_fn,
         logger=logger,
@@ -629,18 +706,26 @@ def test_rainbow(args=get_args()):
         rews, lens = result["rews"], result["lens"]
         print(f"Final reward: {rews.mean()}, length: {lens.mean()}")
 
+class TrafficEventType(Enum):
 
-def test_rainbow_resume(args=get_args()):
-    args.resume = True
-    test_rainbow(args)
+    """
+    This enum represents different traffic events that occur during driving.
+    """
 
-
-def test_prainbow(args=get_args()):
-    args.prioritized_replay = True
-    args.gamma = .95
-    args.seed = 1
-    test_rainbow(args)
-
+    NORMAL_DRIVING = 0
+    COLLISION_STATIC = 1
+    COLLISION_VEHICLE = 2
+    COLLISION_PEDESTRIAN = 3
+    ROUTE_DEVIATION = 4
+    ROUTE_COMPLETION = 5
+    ROUTE_COMPLETED = 6
+    TRAFFIC_LIGHT_INFRACTION = 7
+    WRONG_WAY_INFRACTION = 8
+    ON_SIDEWALK_INFRACTION = 9
+    STOP_INFRACTION = 10
+    OUTSIDE_LANE_INFRACTION = 11
+    OUTSIDE_ROUTE_LANES_INFRACTION = 12
+    VEHICLE_BLOCKED = 13
 def main():
     description = "CARLA AD Leaderboard Evaluation: evaluate your Agent in CARLA scenarios\n"
 
@@ -672,8 +757,10 @@ def main():
                         help='Number of repetitions per route.')
 
     # agent-related options
-    parser.add_argument("-a", "--agent", type=str, help="Path to Agent's py file to evaluate",default="/home/transfuser/autonomous_car/transfuser-afa/Deepmia-CarlaProject/team_code_transfuser/submission_agent.py")
-    parser.add_argument("--agent-config", type=str, help="Path to Agent's configuration file", default="/home/transfuser/autonomous_car/transfuser/model_ckpt/transfuser")
+    parser.add_argument("-a", "--agent", type=str, help="Path to Agent's py file to evaluate",
+                        default="/home/transfuser/autonomous_car/transfuser-afa/Deepmia-CarlaProject/team_code_transfuser/submission_agent.py")
+    parser.add_argument("--agent-config", type=str, help="Path to Agent's configuration file",
+                        default="/home/transfuser/autonomous_car/transfuser/model_ckpt/transfuser")
 
     parser.add_argument("--track", type=str, default='SENSORS', help="Participation track: SENSORS, MAP")
     parser.add_argument('--resume', type=bool, default=False, help='Resume execution from last checkpoint?')
@@ -684,10 +771,8 @@ def main():
     arguments = parser.parse_args()
     statistics_manager = StatisticsManager()
 
-
+    test_rainbow(get_args(), arguments, statistics_manager)
 
 
 if __name__ == "__main__":
     main()
-
-

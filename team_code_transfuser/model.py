@@ -782,7 +782,7 @@ class LidarCenterNet(nn.Module):
 
         self.rl_data_logger.waypoints = self.rl_data_logger.transform_waypoints(pred_wp)
         self.rl_data_logger.hd_map = self.rl_data_logger.transform_hdmap(pred_bev)
-        self.rl_data_logger.bboxes = self.rl_data_logger.transform_bboxes(rotated_bboxes)
+        #self.rl_data_logger.bboxes = self.rl_data_logger.transform_bboxes(rotated_bboxes)
 
         return pred_wp, rotated_bboxes
 
@@ -1130,12 +1130,15 @@ class RlDataLogger:
         self.throttle = None
         self.steer = None
 
-    def return_data(self):
+    def return_dict_data(self):
         return {
             "waypoints": self.waypoints,
-            "hd_map": self.hd_map,
-            "bboxes": self.bboxes
+            "hd_map": self.hd_map
+            #"bboxes": self.bboxes
         }
+
+    def return_data(self):
+        return np.concatenate((np.array(self.waypoints, dtype=np.float32).flatten(), np.array(self.hd_map, dtype=np.float32).flatten()))
 
     def return_outdata(self):
         data = {
@@ -1183,19 +1186,12 @@ class RlDataLogger:
         return bev_image
 
     def transform_bboxes(self, bboxes):
-        rotated_bboxes = []
-        for bbox in bboxes.detach().cpu().numpy():
-            bbox = self.get_rotated_bbox(bbox[:7])
-            rotated_bboxes.append(bbox)
+        image = np.zeros((256, 512, 3))
 
-        idx = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5]]
-
-        image = np.zeros((256, 512))
-
-        for bbox, brake in bboxes:
+        for bbox, brake, _ in bboxes:
             bbox = bbox.astype(np.int32)[:, :2]
-            contours = np. array(bbox[idx])
-            cv2.fillPoly(image, pts=[contours], color=255)
+            contours = np. array([[bbox[0], bbox[1]], [bbox[1], bbox[2]], [bbox[2], bbox[3]], [bbox[3], bbox[0]]], dtype=np.int32)
+            cv2.fillPoly(image, pts=[contours], color=(255, 255, 255))
 
         cv2.imwrite(str("/home/transfuser/image.png"), image)
 

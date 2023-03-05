@@ -101,8 +101,9 @@ class RLCarla(gym.Env, object):
         signal.signal(signal.SIGINT, self._signal_handler)
 
         self.args = args
-        self.observation_space = spaces.Box(-2, 2, shape=(1,), dtype=float)
-        self.action_space = gym.spaces.Discrete(11)
+        self.observation_space =gym.spaces.Box(low=np.array([[-15, 0], [-15,0]]), high=np.array([[15, 30], [15,30]]), shape=[2, 2])
+
+        self.action_space = gym.spaces.Discrete(66)
 
         #
         self.route_indexer = RouteIndexer(args.routes, args.scenarios, args.repetitions)

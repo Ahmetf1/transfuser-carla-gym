@@ -2,66 +2,13 @@
     "_checkpoint": {
         "global_record": {},
         "progress": [
-            2,
+            0,
             36
         ],
-        "records": [
-            {
-                "index": 0,
-                "infractions": {
-                    "collisions_layout": [],
-                    "collisions_pedestrian": [],
-                    "collisions_vehicle": [],
-                    "outside_route_lanes": [],
-                    "red_light": [],
-                    "route_dev": [],
-                    "route_timeout": [],
-                    "stop_infraction": [],
-                    "vehicle_blocked": []
-                },
-                "meta": {
-                    "duration_game": 0.05000000074505806,
-                    "duration_system": 1.982452154159546,
-                    "route_length": 1130.24134093902
-                },
-                "route_id": "RouteScenario_0",
-                "scores": {
-                    "score_composed": 0.0,
-                    "score_penalty": 1.0,
-                    "score_route": 0
-                },
-                "status": "Failed - Agent crashed"
-            },
-            {
-                "index": 1,
-                "infractions": {
-                    "collisions_layout": [],
-                    "collisions_pedestrian": [],
-                    "collisions_vehicle": [],
-                    "outside_route_lanes": [],
-                    "red_light": [],
-                    "route_dev": [],
-                    "route_timeout": [],
-                    "stop_infraction": [],
-                    "vehicle_blocked": []
-                },
-                "meta": {
-                    "duration_game": 0.05000000074505806,
-                    "duration_system": 0.15259623527526855,
-                    "route_length": 1014.5683614271728
-                },
-                "route_id": "RouteScenario_1",
-                "scores": {
-                    "score_composed": 0.0,
-                    "score_penalty": 1.0,
-                    "score_route": 0
-                },
-                "status": "Failed - Agent crashed"
-            }
-        ]
+        "records": []
     },
-    "eligible": false,
-    "entry_status": "Started",
+    "eligible": "",
+    "entry_status": "",
     "labels": [],
     "sensors": [
         "carla_camera",

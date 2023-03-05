@@ -446,7 +446,7 @@ class HybridAgent(autonomous_agent.AutonomousAgent):
 
     def non_maximum_suppression(self, bounding_boxes, iou_treshhold):
         filtered_boxes = []
-        bounding_boxes = np.array(list(itertools.chain.from_iterable(bounding_boxes)), dtype=np.object)
+        bounding_boxes = np.array(list(itertools.chain.from_iterable(bounding_boxes)), dtype=object)
 
         if (bounding_boxes.size == 0):  # If no bounding boxes are detected can't do NMS
             return filtered_boxes
@@ -628,6 +628,8 @@ class HybridAgent(autonomous_agent.AutonomousAgent):
     def destroy(self):
         del self.nets
 
+    def observe(self):
+        return self.nets[0].rl_data_logger.return_data()
 
 # Taken from LBC
 class RoutePlanner(object):
