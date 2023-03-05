@@ -1,17 +1,17 @@
 # TransFuser: Imitation with Transformer-Based Sensor Fusion for Autonomous Driving
 
-## [Paper](http://www.cvlibs.net/publications/Chitta2022PAMI.pdf) | [Supplementary](http://www.cvlibs.net/publications/Chitta2022PAMI_supplementary.pdf) | [Talk](https://www.youtube.com/watch?v=-GMhYcxOiEU) | [Poster](http://www.cvlibs.net/publications/Chitta2022PAMI_poster.pdf) | [Slides](https://kashyap7x.github.io/assets/pdf/talks/Chitta2022AIR.pdf)
-
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/transfuser-imitation-with-transformer-based/autonomous-driving-on-carla-leaderboard)](https://paperswithcode.com/sota/autonomous-driving-on-carla-leaderboard?p=transfuser-imitation-with-transformer-based)
+## [Paper](https://arxiv.org/abs/2205.15997) 
 
 <img src="figures/demo.gif">
 
-This repository contains the code for the PAMI 2022 paper [TransFuser: Imitation with Transformer-Based Sensor Fusion for Autonomous Driving](https://arxiv.org/abs/2205.15997). This work is a journal extension of the CVPR 2021 paper [Multi-Modal Fusion Transformer for End-to-End Autonomous Driving](https://arxiv.org/abs/2104.09224). The code for the CVPR 2021 paper is available in the [cvpr2021](https://github.com/autonomousvision/transfuser/tree/cvpr2021) branch.
+This repository contains the code for the paper [TransFuser: Imitation with Transformer-Based Sensor Fusion for Autonomous Driving](https://arxiv.org/abs/2205.15997). 
+This work is a journal extension of the CVPR 2021 paper [Multi-Modal Fusion Transformer for End-to-End Autonomous Driving](https://arxiv.org/abs/2104.09224). 
+The code of the CVPR 2021 paper is available in the [cvpr2021](https://github.com/autonomousvision/transfuser/tree/cvpr2021) branch.
 
 If you find our code or papers useful, please cite:
 
 ```bibtex
-@article{Chitta2022PAMI,
+@article{Chitta2022ARXIV,
   author = {Chitta, Kashyap and
             Prakash, Aditya and
             Jaeger, Bernhard and
@@ -19,7 +19,8 @@ If you find our code or papers useful, please cite:
             Renz, Katrin and
             Geiger, Andreas},
   title = {TransFuser: Imitation with Transformer-Based Sensor Fusion for Autonomous Driving},
-  journal = {Pattern Analysis and Machine Intelligence (PAMI)},
+  journal = {arXiv},
+  volume  = {2205.15997},
   year = {2022},
 }
 ```
@@ -35,10 +36,21 @@ If you find our code or papers useful, please cite:
 }
 ```
 
-Also, check out the code for other recent work on CARLA from our group:
-- [Renz et al., PlanT: Explainable Planning Transformers via Object-Level Representations (CoRL 2022)](https://github.com/autonomousvision/plant)
-- [Hanselmann et al., KING: Generating Safety-Critical Driving Scenarios for Robust Imitation via Kinematics Gradients (ECCV 2022)](https://github.com/autonomousvision/king)
-- [Chitta et al., NEAT: Neural Attention Fields for End-to-End Autonomous Driving (ICCV 2021)](https://github.com/autonomousvision/neat)
+[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/transfuser-imitation-with-transformer-based/autonomous-driving-on-carla-leaderboard)](https://paperswithcode.com/sota/autonomous-driving-on-carla-leaderboard?p=transfuser-imitation-with-transformer-based)
+
+## ToDos
+
+- [x] Autopilot
+- [x] Training scenarios and routes
+- [x] Longest6 benchmark
+- [x] Inference code
+- [x] Data generation
+- [x] Pretrained agents
+- [x] Training script
+- [x] Dataset upload
+- [x] Leaderboard submission instructions
+- [ ] Additional tools
+
 
 ## Contents
 
@@ -148,8 +160,6 @@ Once the CARLA server is running, evaluate an agent with the script:
 ```
 
 By editing the arguments in `local_evaluation.sh`, we can benchmark performance on the Longest6 routes. You can evaluate both privileged agents (such as [autopilot.py]) and sensor-based models. To evaluate the sensor-based models use [submission_agent.py](./team_code_transfuser/submission_agent.py) as the `TEAM_AGENT` and point to the folder you downloaded the model weights into for the `TEAM_CONFIG`. The code is automatically configured to use the correct method based on the args.txt file in the model folder.
-
-You can look at qualitative examples of the expected driving behavior of TransFuser on the Longest6 routes [here](https://www.youtube.com/watch?v=DZS-U3-iV0s&list=PL6LvknlY2HlQG3YQ2nMIx7WcnyzgK9meO).
 
 ### Parsing longest6 results
 To compute additional statistics from the results of evaluation runs we provide a parser script [tools/result_parser.py](./tools/result_parser.py).

@@ -627,7 +627,7 @@ def draw_target_point(target_point, color = (255, 255, 255)):
     point = np.clip(point, 0, 256)
     cv2.circle(image, tuple(point), radius=5, color=color, thickness=3)
     image = image.reshape(1, 256, 256)
-    return image.astype(np.float) / 255.
+    return image.astype(float) / 255.
 
 def correspondences_at_one_scale(valid_bev_points, valid_cam_points, lidar_x, lidar_y, camera_x, camera_y, scale):
     """

@@ -5,11 +5,6 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-CARLA Challenge Evaluator Routes
-
-Provisional code to evaluate Autonomous Agents for the CARLA Autonomous Driving challenge
-"""
 from __future__ import print_function
 
 import traceback
@@ -28,13 +23,31 @@ from srunner.scenariomanager.carla_data_provider import *
 from srunner.scenariomanager.timer import GameTime
 from srunner.scenariomanager.watchdog import Watchdog
 
-from leaderboard.scenarios.scenario_manager_local import ScenarioManager
+from leaderboard.scenarios.RL_scenario_manager import RlScenarioManager
 from leaderboard.scenarios.route_scenario_local import RouteScenario
 from leaderboard.envs.sensor_interface import SensorConfigurationInvalid
 from leaderboard.autoagents.agent_wrapper_local import  AgentWrapper, AgentError
 from leaderboard.utils.statistics_manager_local import StatisticsManager
 from leaderboard.utils.route_indexer import RouteIndexer
 
+
+import argparse
+import os
+import pickle
+import pprint
+
+import gym
+import numpy as np
+import torch
+from torch.utils.tensorboard import SummaryWriter
+
+from tianshou.data import Collector, PrioritizedVectorReplayBuffer, VectorReplayBuffer
+from tianshou.env import DummyVectorEnv
+from tianshou.policy import RainbowPolicy
+from tianshou.trainer import offpolicy_trainer
+from tianshou.utils import TensorboardLogger
+from tianshou.utils.net.common import Net
+from tianshou.utils.net.discrete import NoisyLinear
 
 sensors_to_icons = {
     'sensor.camera.rgb':        'carla_camera',
@@ -50,11 +63,7 @@ sensors_to_icons = {
 }
 
 
-class LeaderboardEvaluator(object):
-
-    """
-    TODO: document me!
-    """
+class RLCarla(gym.Env, object):
 
     ego_vehicles = []
 
@@ -95,7 +104,7 @@ class LeaderboardEvaluator(object):
         self.module_agent = importlib.import_module(module_name)
 
         # Create the ScenarioManager
-        self.manager = ScenarioManager(args.timeout, args.debug > 1)
+        self.manager = RlScenarioManager(args.timeout, args.debug > 1)
 
         # Time control for summary purposes
         self._start_time = GameTime.get_time()
@@ -104,6 +113,70 @@ class LeaderboardEvaluator(object):
         # Create the agent timer
         self._agent_watchdog = Watchdog(int(float(args.timeout)))
         signal.signal(signal.SIGINT, self._signal_handler)
+
+        self.args = args
+        self.observation_space = gym.spaces.Box(-2, 2, shape=(1,), dtype=float)
+        self.action_space = gym.spaces.Discrete(11)
+
+        #
+        self.route_indexer = RouteIndexer(args.routes, args.scenarios, args.repetitions)
+
+        if args.resume:
+            self.route_indexer.resume(args.checkpoint)
+            self.statistics_manager.resume(args.checkpoint)
+        else:
+            self.statistics_manager.clear_record(args.checkpoint)
+            self.route_indexer.save_state(args.checkpoint)
+        #
+
+        self.reset()
+
+    def step(self, action):
+        self.manager.step_scenario(action)
+
+
+    def reset(self):
+        #self.route_indexer.save_state(self.args.checkpoint)
+        if self.route_indexer.peek():
+            # setup
+            config = self.route_indexer.next()
+            self._load_scenario(self.args, config)
+            self.manager.run_scenario()
+        else:
+            self.close()
+
+
+    def render(self, mode='human', close=False):
+        print("render")
+
+    def close(self):
+        print("\033[1m> Registering the global statistics\033[0m")
+        global_stats_record = self.statistics_manager.compute_global_statistics(self.route_indexer.total)
+        StatisticsManager.save_global_record(global_stats_record, self.sensor_icons, self.route_indexer.total,
+                                             self.args.checkpoint)
+
+        try:
+            print("\033[1m> Stopping the route\033[0m")
+            self.manager.stop_scenario()
+            self._register_statistics(self.config, self.args.checkpoint, "entry_status", "crash_message")
+
+            if self.args.record:
+                self.client.stop_recorder()
+
+            # Remove all actors
+            self.scenario.remove_all_actors()
+
+            self._cleanup()
+
+        except Exception as e:
+            print("\n\033[91mFailed to stop the scenario, the statistics might be empty:")
+            print("> {}\033[0m\n".format(e))
+            traceback.print_exc()
+
+            crash_message = "Simulation crashed"
+
+        if crash_message == "Simulation crashed":
+            sys.exit(-1)
 
     def _signal_handler(self, signum, frame):
         """
@@ -243,7 +316,7 @@ class LeaderboardEvaluator(object):
         self.statistics_manager.save_record(current_stats_record, config.index, checkpoint)
         self.statistics_manager.save_entry_status(entry_status, False, checkpoint)
 
-    def _load_and_run_scenario(self, args, config):
+    def _load_scenario(self, args, config):
         """
         Load and run the scenario given by config.
 
@@ -314,18 +387,18 @@ class LeaderboardEvaluator(object):
         try:
             self._load_and_wait_for_world(args, config.town, config.ego_vehicles)
             self._prepare_ego_vehicles(config.ego_vehicles, False)
-            scenario = RouteScenario(world=self.world, config=config, debug_mode=args.debug)
-            self.statistics_manager.set_scenario(scenario.scenario)
+            self.scenario = RouteScenario(world=self.world, config=config, debug_mode=args.debug)
+            self.statistics_manager.set_scenario(self.scenario.scenario)
 
             # Night mode
             if config.weather.sun_altitude_angle < 0.0:
-                for vehicle in scenario.ego_vehicles:
+                for vehicle in self.scenario.ego_vehicles:
                     vehicle.set_light_state(carla.VehicleLightState(self._vehicle_lights))
 
             # Load scenario and run it
             if args.record:
                 self.client.start_recorder("{}/{}_rep{}.log".format(args.record, config.name, config.repetition_index))
-            self.manager.load_scenario(scenario, self.agent_instance, config.repetition_index)
+            self.manager.load_scenario(self.scenario, self.agent_instance, config.repetition_index)
 
         except Exception as e:
             # The scenario is wrong -> set the ejecution to crashed and stop
@@ -344,79 +417,229 @@ class LeaderboardEvaluator(object):
             self._cleanup()
             sys.exit(-1)
 
-        print("\033[1m> Running the route\033[0m")
+# RL functions
 
-        # Run the scenario
-        try:
-            self.manager.run_scenario()
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--task', type=str, default='CartPole-v0')
+    parser.add_argument('--reward-threshold', type=float, default=None)
+    parser.add_argument('--seed', type=int, default=1626)
+    parser.add_argument('--eps-test', type=float, default=0.05)
+    parser.add_argument('--eps-train', type=float, default=0.1)
+    parser.add_argument('--buffer-size', type=int, default=20000)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--gamma', type=float, default=0.9)
+    parser.add_argument('--num-atoms', type=int, default=51)
+    parser.add_argument('--v-min', type=float, default=-10.)
+    parser.add_argument('--v-max', type=float, default=10.)
+    parser.add_argument('--noisy-std', type=float, default=0.1)
+    parser.add_argument('--n-step', type=int, default=3)
+    parser.add_argument('--target-update-freq', type=int, default=320)
+    parser.add_argument('--epoch', type=int, default=10)
+    parser.add_argument('--step-per-epoch', type=int, default=8000)
+    parser.add_argument('--step-per-collect', type=int, default=8)
+    parser.add_argument('--update-per-step', type=float, default=0.125)
+    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument(
+        '--hidden-sizes', type=int, nargs='*', default=[128, 128, 128, 128]
+    )
+    parser.add_argument('--training-num', type=int, default=8)
+    parser.add_argument('--test-num', type=int, default=100)
+    parser.add_argument('--logdir', type=str, default='log')
+    parser.add_argument('--render', type=float, default=0.)
+    parser.add_argument('--prioritized-replay', action="store_true", default=False)
+    parser.add_argument('--alpha', type=float, default=0.6)
+    parser.add_argument('--beta', type=float, default=0.4)
+    parser.add_argument('--beta-final', type=float, default=1.)
+    parser.add_argument('--resume', action="store_true")
+    parser.add_argument(
+        '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu'
+    )
+    parser.add_argument("--save-interval", type=int, default=4)
+    args = parser.parse_known_args()[0]
+    return args
 
-        except AgentError as e:
-            # The agent has failed -> stop the route
-            print("\n\033[91mStopping the route, the agent has crashed:")
-            print("> {}\033[0m\n".format(e))
-            traceback.print_exc()
 
-            crash_message = "Agent crashed"
+def test_rainbow(args=get_args()):
+    env = gym.make(args.task)
+    args.state_shape = env.observation_space.shape or env.observation_space.n
+    args.action_shape = env.action_space.shape or env.action_space.n
+    if args.reward_threshold is None:
+        default_reward_threshold = {"CartPole-v0": 195}
+        args.reward_threshold = default_reward_threshold.get(
+            args.task, env.spec.reward_threshold
+        )
+    # train_envs = gym.make(args.task)
+    # you can also use tianshou.env.SubprocVectorEnv
+    train_envs = DummyVectorEnv(
+        [lambda: gym.make(args.task) for _ in range(args.training_num)]
+    )
+    # test_envs = gym.make(args.task)
+    test_envs = DummyVectorEnv(
+        [lambda: gym.make(args.task) for _ in range(args.test_num)]
+    )
+    # seed
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    train_envs.seed(args.seed)
+    test_envs.seed(args.seed)
 
-        except Exception as e:
-            print("\n\033[91mError during the simulation:")
-            print("> {}\033[0m\n".format(e))
-            traceback.print_exc()
+    # model
 
-            crash_message = "Simulation crashed"
-            entry_status = "Crashed"
+    def noisy_linear(x, y):
+        return NoisyLinear(x, y, args.noisy_std)
 
-        # Stop the scenario
-        try:
-            print("\033[1m> Stopping the route\033[0m")
-            self.manager.stop_scenario()
-            self._register_statistics(config, args.checkpoint, entry_status, crash_message)
+    net = Net(
+        args.state_shape,
+        args.action_shape,
+        hidden_sizes=args.hidden_sizes,
+        device=args.device,
+        softmax=True,
+        num_atoms=args.num_atoms,
+        dueling_param=({
+            "linear_layer": noisy_linear
+        }, {
+            "linear_layer": noisy_linear
+        }),
+    )
+    optim = torch.optim.Adam(net.parameters(), lr=args.lr)
+    policy = RainbowPolicy(
+        net,
+        optim,
+        args.gamma,
+        args.num_atoms,
+        args.v_min,
+        args.v_max,
+        args.n_step,
+        target_update_freq=args.target_update_freq,
+    ).to(args.device)
+    # buffer
+    if args.prioritized_replay:
+        buf = PrioritizedVectorReplayBuffer(
+            args.buffer_size,
+            buffer_num=len(train_envs),
+            alpha=args.alpha,
+            beta=args.beta,
+            weight_norm=True,
+        )
+    else:
+        buf = VectorReplayBuffer(args.buffer_size, buffer_num=len(train_envs))
+    # collector
+    train_collector = Collector(policy, train_envs, buf, exploration_noise=True)
+    test_collector = Collector(policy, test_envs, exploration_noise=True)
+    # policy.set_eps(1)
+    train_collector.collect(n_step=args.batch_size * args.training_num)
+    # log
+    log_path = os.path.join(args.logdir, args.task, "rainbow")
+    writer = SummaryWriter(log_path)
+    logger = TensorboardLogger(writer, save_interval=args.save_interval)
 
-            if args.record:
-                self.client.stop_recorder()
+    def save_best_fn(policy):
+        torch.save(policy.state_dict(), os.path.join(log_path, "policy.pth"))
 
-            # Remove all actors
-            scenario.remove_all_actors()
+    def stop_fn(mean_rewards):
+        return mean_rewards >= args.reward_threshold
 
-            self._cleanup()
-
-        except Exception as e:
-            print("\n\033[91mFailed to stop the scenario, the statistics might be empty:")
-            print("> {}\033[0m\n".format(e))
-            traceback.print_exc()
-
-            crash_message = "Simulation crashed"
-
-        if crash_message == "Simulation crashed":
-            sys.exit(-1)
-
-    def run(self, args):
-        """
-        Run the challenge mode
-        """
-        route_indexer = RouteIndexer(args.routes, args.scenarios, args.repetitions)
-
-        if args.resume:
-            route_indexer.resume(args.checkpoint)
-            self.statistics_manager.resume(args.checkpoint)
+    def train_fn(epoch, env_step):
+        # eps annealing, just a demo
+        if env_step <= 10000:
+            policy.set_eps(args.eps_train)
+        elif env_step <= 50000:
+            eps = args.eps_train - (env_step - 10000) / \
+                40000 * (0.9 * args.eps_train)
+            policy.set_eps(eps)
         else:
-            self.statistics_manager.clear_record(args.checkpoint)
-            route_indexer.save_state(args.checkpoint)
+            policy.set_eps(0.1 * args.eps_train)
+        # beta annealing, just a demo
+        if args.prioritized_replay:
+            if env_step <= 10000:
+                beta = args.beta
+            elif env_step <= 50000:
+                beta = args.beta - (env_step - 10000) / \
+                    40000 * (args.beta - args.beta_final)
+            else:
+                beta = args.beta_final
+            buf.set_beta(beta)
 
-        while route_indexer.peek():
-            # setup
-            config = route_indexer.next()
+    def test_fn(epoch, env_step):
+        policy.set_eps(args.eps_test)
 
-            # run
-            self._load_and_run_scenario(args, config)
+    def save_checkpoint_fn(epoch, env_step, gradient_step):
+        # see also: https://pytorch.org/tutorials/beginner/saving_loading_models.html
+        ckpt_path = os.path.join(log_path, "checkpoint.pth")
+        # Example: saving by epoch num
+        # ckpt_path = os.path.join(log_path, f"checkpoint_{epoch}.pth")
+        torch.save(
+            {
+                "model": policy.state_dict(),
+                "optim": optim.state_dict(),
+            }, ckpt_path
+        )
+        buffer_path = os.path.join(log_path, "train_buffer.pkl")
+        pickle.dump(train_collector.buffer, open(buffer_path, "wb"))
+        return ckpt_path
 
-            route_indexer.save_state(args.checkpoint)
+    if args.resume:
+        # load from existing checkpoint
+        print(f"Loading agent under {log_path}")
+        ckpt_path = os.path.join(log_path, "checkpoint.pth")
+        if os.path.exists(ckpt_path):
+            checkpoint = torch.load(ckpt_path, map_location=args.device)
+            policy.load_state_dict(checkpoint['model'])
+            policy.optim.load_state_dict(checkpoint['optim'])
+            print("Successfully restore policy and optim.")
+        else:
+            print("Fail to restore policy and optim.")
+        buffer_path = os.path.join(log_path, "train_buffer.pkl")
+        if os.path.exists(buffer_path):
+            train_collector.buffer = pickle.load(open(buffer_path, "rb"))
+            print("Successfully restore buffer.")
+        else:
+            print("Fail to restore buffer.")
 
-        # save global statistics
-        print("\033[1m> Registering the global statistics\033[0m")
-        global_stats_record = self.statistics_manager.compute_global_statistics(route_indexer.total)
-        StatisticsManager.save_global_record(global_stats_record, self.sensor_icons, route_indexer.total, args.checkpoint)
+    # trainer
+    result = offpolicy_trainer(
+        policy,
+        train_collector,
+        test_collector,
+        args.epoch,
+        args.step_per_epoch,
+        args.step_per_collect,
+        args.test_num,
+        args.batch_size,
+        update_per_step=args.update_per_step,
+        train_fn=train_fn,
+        test_fn=test_fn,
+        stop_fn=stop_fn,
+        save_best_fn=save_best_fn,
+        logger=logger,
+        resume_from_log=args.resume,
+        save_checkpoint_fn=save_checkpoint_fn,
+    )
+    assert stop_fn(result["best_reward"])
 
+    if __name__ == "__main__":
+        pprint.pprint(result)
+        # Let's watch its performance!
+        env = gym.make(args.task)
+        policy.eval()
+        policy.set_eps(args.eps_test)
+        collector = Collector(policy, env)
+        result = collector.collect(n_episode=1, render=args.render)
+        rews, lens = result["rews"], result["lens"]
+        print(f"Final reward: {rews.mean()}, length: {lens.mean()}")
+
+
+def test_rainbow_resume(args=get_args()):
+    args.resume = True
+    test_rainbow(args)
+
+
+def test_prainbow(args=get_args()):
+    args.prioritized_replay = True
+    args.gamma = .95
+    args.seed = 1
+    test_rainbow(args)
 
 def main():
     description = "CARLA AD Leaderboard Evaluation: evaluate your Agent in CARLA scenarios\n"
@@ -457,19 +680,14 @@ def main():
     parser.add_argument("--checkpoint", type=str,
                         default='./simulation_results.json',
                         help="Path to checkpoint used for saving statistics and resuming")
-    arguments = parser.parse_args()
 
+    arguments = parser.parse_args()
     statistics_manager = StatisticsManager()
 
-    try:
-        leaderboard_evaluator = LeaderboardEvaluator(arguments, statistics_manager)
-        leaderboard_evaluator.run(arguments)
-
-    except Exception as e:
-        traceback.print_exc()
-    finally:
-        del leaderboard_evaluator
 
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
+
+

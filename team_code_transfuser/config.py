@@ -1,3 +1,4 @@
+import argparse
 import os
 
 class GlobalConfig:
@@ -32,7 +33,7 @@ class GlobalConfig:
     augment = True
     inv_augment_prob = 0.1 # Probablity that data augmentation is applied is 1.0 - inv_augment_prob
     aug_max_rotation = 20 # degree
-    debug = False # If true the model in and outputs will be visualized and saved into Os variable Save_Path
+    debug = True # If true the model in and outputs will be visualized and saved into Os variable Save_Path
     sync_batch_norm = False # If this is true we convert the batch norms, to synced bach norms.
     train_debug_save_freq = 50 # At which interval to save debug files to disk during training
 
@@ -203,6 +204,47 @@ class GlobalConfig:
     clip_delta = 0.25 # maximum change in speed input to logitudinal controller
     clip_throttle = 0.75 # Maximum throttle allowed by the controller
 
+    # Safety Controller
+    bbox_losed_threshold = 10
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--task', type=str, default='CartPole-v0')
+    parser.add_argument('--reward-threshold', type=float, default=None)
+    parser.add_argument('--seed', type=int, default=1626)
+    parser.add_argument('--eps-test', type=float, default=0.05)
+    parser.add_argument('--eps-train', type=float, default=0.1)
+    parser.add_argument('--buffer-size', type=int, default=20000)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--gamma', type=float, default=0.9)
+    parser.add_argument('--num-atoms', type=int, default=51)
+    parser.add_argument('--v-min', type=float, default=-10.)
+    parser.add_argument('--v-max', type=float, default=10.)
+    parser.add_argument('--noisy-std', type=float, default=0.1)
+    parser.add_argument('--n-step', type=int, default=3)
+    parser.add_argument('--target-update-freq', type=int, default=320)
+    parser.add_argument('--epoch', type=int, default=10)
+    parser.add_argument('--step-per-epoch', type=int, default=8000)
+    parser.add_argument('--step-per-collect', type=int, default=8)
+    parser.add_argument('--update-per-step', type=float, default=0.125)
+    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument(
+        '--hidden-sizes', type=int, nargs='*', default=[128, 128, 128, 128]
+    )
+    parser.add_argument('--training-num', type=int, default=8)
+    parser.add_argument('--test-num', type=int, default=100)
+    parser.add_argument('--logdir', type=str, default='log')
+    parser.add_argument('--render', type=float, default=0.)
+    parser.add_argument('--prioritized-replay', action="store_true", default=False)
+    parser.add_argument('--alpha', type=float, default=0.6)
+    parser.add_argument('--beta', type=float, default=0.4)
+    parser.add_argument('--beta-final', type=float, default=1.)
+    parser.add_argument('--resume', action="store_true")
+    parser.add_argument(
+        '--device', type=str, default='cuda'
+    )
+    parser.add_argument("--save-interval", type=int, default=4)
+    args = parser.parse_known_args()[0]
+
     def __init__(self, root_dir='', setting='all', **kwargs):
         self.root_dir = root_dir
         if (setting == 'all'): # All towns used for training no validation data
@@ -248,3 +290,4 @@ class GlobalConfig:
 
         for k,v in kwargs.items():
             setattr(self, k, v)
+

@@ -5,11 +5,6 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-CARLA Challenge Evaluator Routes
-
-Provisional code to evaluate Autonomous Agents for the CARLA Autonomous Driving challenge
-"""
 from __future__ import print_function
 
 import traceback
@@ -28,13 +23,17 @@ from srunner.scenariomanager.carla_data_provider import *
 from srunner.scenariomanager.timer import GameTime
 from srunner.scenariomanager.watchdog import Watchdog
 
-from leaderboard.scenarios.scenario_manager_local import ScenarioManager
+from leaderboard.scenarios.RL_scenario_manager import RlScenarioManager
 from leaderboard.scenarios.route_scenario_local import RouteScenario
 from leaderboard.envs.sensor_interface import SensorConfigurationInvalid
 from leaderboard.autoagents.agent_wrapper_local import  AgentWrapper, AgentError
 from leaderboard.utils.statistics_manager_local import StatisticsManager
 from leaderboard.utils.route_indexer import RouteIndexer
 
+import gym
+from gym import error, spaces, utils
+from gym.utils import seeding
+import numpy as np
 
 sensors_to_icons = {
     'sensor.camera.rgb':        'carla_camera',
@@ -50,11 +49,7 @@ sensors_to_icons = {
 }
 
 
-class LeaderboardEvaluator(object):
-
-    """
-    TODO: document me!
-    """
+class RLCarla(gym.Env, object):
 
     ego_vehicles = []
 
@@ -95,7 +90,7 @@ class LeaderboardEvaluator(object):
         self.module_agent = importlib.import_module(module_name)
 
         # Create the ScenarioManager
-        self.manager = ScenarioManager(args.timeout, args.debug > 1)
+        self.manager = RlScenarioManager(args.timeout, args.debug > 1)
 
         # Time control for summary purposes
         self._start_time = GameTime.get_time()
@@ -104,6 +99,70 @@ class LeaderboardEvaluator(object):
         # Create the agent timer
         self._agent_watchdog = Watchdog(int(float(args.timeout)))
         signal.signal(signal.SIGINT, self._signal_handler)
+
+        self.args = args
+        self.observation_space = spaces.Box(-2, 2, shape=(1,), dtype=float)
+        self.action_space = gym.spaces.Discrete(11)
+
+        #
+        self.route_indexer = RouteIndexer(args.routes, args.scenarios, args.repetitions)
+
+        if args.resume:
+            self.route_indexer.resume(args.checkpoint)
+            self.statistics_manager.resume(args.checkpoint)
+        else:
+            self.statistics_manager.clear_record(args.checkpoint)
+            self.route_indexer.save_state(args.checkpoint)
+        #
+
+        self.reset()
+
+    def step(self, action):
+        self.manager.step_scenario(action)
+
+
+    def reset(self):
+        #self.route_indexer.save_state(self.args.checkpoint)
+        if self.route_indexer.peek():
+            # setup
+            config = self.route_indexer.next()
+            self._load_scenario(self.args, config)
+            self.manager.run_scenario()
+        else:
+            self.close()
+
+
+    def render(self, mode='human', close=False):
+        print("render")
+
+    def close(self):
+        print("\033[1m> Registering the global statistics\033[0m")
+        global_stats_record = self.statistics_manager.compute_global_statistics(self.route_indexer.total)
+        StatisticsManager.save_global_record(global_stats_record, self.sensor_icons, self.route_indexer.total,
+                                             self.args.checkpoint)
+
+        try:
+            print("\033[1m> Stopping the route\033[0m")
+            self.manager.stop_scenario()
+            self._register_statistics(self.config, self.args.checkpoint, "entry_status", "crash_message")
+
+            if self.args.record:
+                self.client.stop_recorder()
+
+            # Remove all actors
+            self.scenario.remove_all_actors()
+
+            self._cleanup()
+
+        except Exception as e:
+            print("\n\033[91mFailed to stop the scenario, the statistics might be empty:")
+            print("> {}\033[0m\n".format(e))
+            traceback.print_exc()
+
+            crash_message = "Simulation crashed"
+
+        if crash_message == "Simulation crashed":
+            sys.exit(-1)
 
     def _signal_handler(self, signum, frame):
         """
@@ -243,7 +302,7 @@ class LeaderboardEvaluator(object):
         self.statistics_manager.save_record(current_stats_record, config.index, checkpoint)
         self.statistics_manager.save_entry_status(entry_status, False, checkpoint)
 
-    def _load_and_run_scenario(self, args, config):
+    def _load_scenario(self, args, config):
         """
         Load and run the scenario given by config.
 
@@ -314,18 +373,18 @@ class LeaderboardEvaluator(object):
         try:
             self._load_and_wait_for_world(args, config.town, config.ego_vehicles)
             self._prepare_ego_vehicles(config.ego_vehicles, False)
-            scenario = RouteScenario(world=self.world, config=config, debug_mode=args.debug)
-            self.statistics_manager.set_scenario(scenario.scenario)
+            self.scenario = RouteScenario(world=self.world, config=config, debug_mode=args.debug)
+            self.statistics_manager.set_scenario(self.scenario.scenario)
 
             # Night mode
             if config.weather.sun_altitude_angle < 0.0:
-                for vehicle in scenario.ego_vehicles:
+                for vehicle in self.scenario.ego_vehicles:
                     vehicle.set_light_state(carla.VehicleLightState(self._vehicle_lights))
 
             # Load scenario and run it
             if args.record:
                 self.client.start_recorder("{}/{}_rep{}.log".format(args.record, config.name, config.repetition_index))
-            self.manager.load_scenario(scenario, self.agent_instance, config.repetition_index)
+            self.manager.load_scenario(self.scenario, self.agent_instance, config.repetition_index)
 
         except Exception as e:
             # The scenario is wrong -> set the ejecution to crashed and stop
@@ -343,79 +402,6 @@ class LeaderboardEvaluator(object):
 
             self._cleanup()
             sys.exit(-1)
-
-        print("\033[1m> Running the route\033[0m")
-
-        # Run the scenario
-        try:
-            self.manager.run_scenario()
-
-        except AgentError as e:
-            # The agent has failed -> stop the route
-            print("\n\033[91mStopping the route, the agent has crashed:")
-            print("> {}\033[0m\n".format(e))
-            traceback.print_exc()
-
-            crash_message = "Agent crashed"
-
-        except Exception as e:
-            print("\n\033[91mError during the simulation:")
-            print("> {}\033[0m\n".format(e))
-            traceback.print_exc()
-
-            crash_message = "Simulation crashed"
-            entry_status = "Crashed"
-
-        # Stop the scenario
-        try:
-            print("\033[1m> Stopping the route\033[0m")
-            self.manager.stop_scenario()
-            self._register_statistics(config, args.checkpoint, entry_status, crash_message)
-
-            if args.record:
-                self.client.stop_recorder()
-
-            # Remove all actors
-            scenario.remove_all_actors()
-
-            self._cleanup()
-
-        except Exception as e:
-            print("\n\033[91mFailed to stop the scenario, the statistics might be empty:")
-            print("> {}\033[0m\n".format(e))
-            traceback.print_exc()
-
-            crash_message = "Simulation crashed"
-
-        if crash_message == "Simulation crashed":
-            sys.exit(-1)
-
-    def run(self, args):
-        """
-        Run the challenge mode
-        """
-        route_indexer = RouteIndexer(args.routes, args.scenarios, args.repetitions)
-
-        if args.resume:
-            route_indexer.resume(args.checkpoint)
-            self.statistics_manager.resume(args.checkpoint)
-        else:
-            self.statistics_manager.clear_record(args.checkpoint)
-            route_indexer.save_state(args.checkpoint)
-
-        while route_indexer.peek():
-            # setup
-            config = route_indexer.next()
-
-            # run
-            self._load_and_run_scenario(args, config)
-
-            route_indexer.save_state(args.checkpoint)
-
-        # save global statistics
-        print("\033[1m> Registering the global statistics\033[0m")
-        global_stats_record = self.statistics_manager.compute_global_statistics(route_indexer.total)
-        StatisticsManager.save_global_record(global_stats_record, self.sensor_icons, route_indexer.total, args.checkpoint)
 
 
 def main():
@@ -457,19 +443,16 @@ def main():
     parser.add_argument("--checkpoint", type=str,
                         default='./simulation_results.json',
                         help="Path to checkpoint used for saving statistics and resuming")
-    arguments = parser.parse_args()
 
+    arguments = parser.parse_args()
     statistics_manager = StatisticsManager()
 
-    try:
-        leaderboard_evaluator = LeaderboardEvaluator(arguments, statistics_manager)
-        leaderboard_evaluator.run(arguments)
+    carla_env = RLCarla(arguments, statistics_manager)
 
-    except Exception as e:
-        traceback.print_exc()
-    finally:
-        del leaderboard_evaluator
+    while True:
+        carla_env.step(10)
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
+
+

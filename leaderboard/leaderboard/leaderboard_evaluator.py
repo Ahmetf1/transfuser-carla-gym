@@ -444,7 +444,7 @@ def main():
     parser.add_argument("--agent-config", type=str, help="Path to Agent's configuration file", default="")
 
     parser.add_argument("--track", type=str, default='SENSORS', help="Participation track: SENSORS, MAP")
-    parser.add_argument('--resume', type=bool, default=False, help='Resume execution from last checkpoint?')
+    parser.add_argument('--resume', type=bool, default=True, help='Resume execution from last checkpoint?')
     parser.add_argument("--checkpoint", type=str,
                         default='./simulation_results.json',
                         help="Path to checkpoint used for saving statistics and resuming")
