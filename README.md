@@ -1,3 +1,6 @@
+# My Contributions
+The repository contains modifications to Transfuser and Carla such that the simulation now works in compatible with GYM reinforcement learning library.  
+
 # TransFuser: Imitation with Transformer-Based Sensor Fusion for Autonomous Driving
 
 ## [Paper](https://arxiv.org/abs/2205.15997) 
